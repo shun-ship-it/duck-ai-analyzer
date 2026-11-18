@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Duck AI Analyzer</title>
+<style>
+:root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+body{margin:0;background:#101522;color:#f4f6fb;padding:18px}
+main{max-width:760px;margin:auto}
+h1{font-size:25px;margin:8px 0}p{color:#b9c3d6;line-height:1.55}
+.panel{background:#1b2537;border:1px solid #34435d;border-radius:16px;padding:14px;margin:14px 0}
+input,button{font:inherit}
+input[type=file]{width:100%;padding:12px;background:#111a29;border-radius:10px}
+button{border:0;border-radius:10px;padding:12px 16px;background:#3978ed;color:white;font-weight:700}
+button:disabled{opacity:.45}
+canvas{width:100%;height:auto;background:#080d16;border-radius:12px;display:block}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.small{font-size:13px;color:#aab6ca}
+.stat{font-size:20px;font-weight:700}
+progress{width:100%;height:12px}
+.tag{display:inline-block;padding:4px 8px;border-radius:99px;background:#253b5e;color:#bcd5ff;font-size:12px}
+</style>
+</head>
+<body><main>
+<span class="tag">iPhone向け・試作版</span>
+<h1>🦆 Duck AI Analyzer</h1>
+<p>ゲーム録画を読み込み、アヒルらしいオレンジ色の領域を画像処理で追跡します。まずは動きの記録を確認するための試作品です。</p>
+<section class="panel">
+  <b>1. ゲーム録画を選択</b>
+  <p class="small">写真アプリに保存した画面収録を選んでください。動画はこのページ内で処理します。</p>
+  <input id="file" type="file" accept="video/*">
+  <video id="video" playsinline muted style="display:none"></video>
+  <div class="row" style="margin-top:12px">
+    <button id="analyze" disabled>動画を分析する</button>
+    <span id="status" class="small">動画を選択してください</span>
+  </div>
+  <progress id="progress" value="0" max="100"></progress>
+</section>
+<section class="panel">
+  <b>2. 検出結果</b>
+  <canvas id="view" width="512" height="700"></canvas>
+  <p id="result" class="stat">まだ分析していません</p>
+  <p id="detail" class="small">分析後、アヒルの検出数と上下位置の変化を表示します。</p>
+</section>
+<section class="panel">
+  <b>この試作版でできること・できないこと</b>
+  <p>○ 録画からアヒル候補の位置を検出する<br>○ 時間ごとの高さの変化をグラフ化する<br>△ 障害物の隙間は背景や演出の影響で誤認識する場合があります<br>× BUMPアプリを自動タップする機能はありません</p>
+  <p class="small">検出は色を使った簡易画像処理です。ゲームのスコア表示やエフェクトをアヒルと誤認することがあります。</p>
+</section>
+</main>
+<script>
+const file=document.getElementById('file'), video=document.getElementById('video');
+const analyze=document.getElementById('analyze'), statusEl=document.getElementById('status');
+const progress=document.getElementById('progress'), canvas=document.getElementById('view'), ctx=canvas.getContext('2d',{willReadFrequently:true});
+const result=document.getElementById('result'), detail=document.getElementById('detail');
+let objectUrl=null;
+file.addEventListener('change',()=>{
+  if(objectUrl) URL.revokeObjectURL(objectUrl);
+  const f=file.files&&file.files[0]; if(!f)return;
+  objectUrl=URL.createObjectURL(f); video.src=objectUrl;
+  video.onloadedmetadata=()=>{analyze.disabled=false;statusEl.textContent=`読み込み完了・${video.duration.toFixed(1)}秒`;};
+});
+function findDuck(image){
+  const {data,width:w,height:h}=image, seen=new Uint8Array(w*h), comps=[];
+  // BUMP録画のゲーム領域を想定。オレンジ～黄色の画素を抽出
+  const isDuck=(i)=>{
+    const r=data[i*4],g=data[i*4+1],b=data[i*4+2],a=data[i*4+3];
+    return a>100 && r>105 && g>65 && r>g*1.12 && g>b*1.18 && (r-g)<150;
+  };
+  for(let y=Math.floor(h*.18);y<Math.floor(h*.88);y+=1){
+    for(let x=Math.floor(w*.08);x<Math.floor(w*.72);x+=1){
+      const p=y*w+x;if(seen[p]||!isDuck(p))continue;
+      let stack=[p];seen[p]=1;let minX=x,maxX=x,minY=y,maxY=y,count=0,sumX=0,sumY=0;
+      while(stack.length){
+        const q=stack.pop(),qx=q%w,qy=(q/w)|0;count++;sumX+=qx;sumY+=qy;
+        minX=Math.min(minX,qx);maxX=Math.max(maxX,qx);minY=Math.min(minY,qy);maxY=Math.max(maxY,qy);
+        const ns=[q-1,q+1,q-w,q+w];
+        for(const n of ns){if(n<0||n>=w*h||seen[n])continue;const nx=n%w,ny=(n/w)|0;
+          if(Math.abs(nx-qx)>1||Math.abs(ny-qy)>1)continue;
+          if(nx<Math.floor(w*.08)||nx>Math.floor(w*.72)||ny<Math.floor(h*.18)||ny>Math.floor(h*.88))continue;
+          if(isDuck(n)){seen[n]=1;stack.push(n);}
+        }
+      }
+      const bw=maxX-minX+1,bh=maxY-minY+1;
+      if(count>35&&count<3500&&bw>=8&&bh>=8&&bw<100&&bh<100&&bw/bh>.35&&bw/bh<2.5)
+        comps.push({x:sumX/count,y:sumY/count,count,bw,bh});
+    }
+  }
+  if(!comps.length)return null;
+  // アヒルは通常小さめのオレンジ色の塊。HUDより大きい塊を除外
+  comps.sort((a,b)=>Math.abs(a.count-650)-Math.abs(b.count-650));
+  return comps[0];
+}
+analyze.addEventListener('click',async()=>{
+  if(!video.src)return;
+  analyze.disabled=true;progress.value=0;statusEl.textContent='分析中…';
+  const off=document.createElement('canvas');off.width=256;off.height=556;
+  const oc=off.getContext('2d',{willReadFrequently:true});
+  const points=[],duration=video.duration,step=.20;
+  try{
+    for(let t=0;t<duration;t+=step){
+      await new Promise((resolve,reject)=>{
+        const done=()=>resolve(); video.addEventListener('seeked',done,{once:true});
+        video.currentTime=Math.min(t,duration-.02);
+      });
+      oc.drawImage(video,0,0,off.width,off.height);
+      const d=findDuck(oc.getImageData(0,0,off.width,off.height));
+      if(d)points.push({t,y:d.y/556,x:d.x/256,size:d.count});
+      progress.value=Math.min(100,t/duration*100);
+      if(points.length%8===0)statusEl.textContent=`分析中… ${t.toFixed(1)} / ${duration.toFixed(1)}秒`;
+    }
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#0b1423';ctx.fillRect(0,0,512,700);
+    ctx.strokeStyle='#33445f';ctx.lineWidth=1;
+    for(let i=1;i<5;i++){let y=i*140;ctx.beginPath();ctx.moveTo(42,y);ctx.lineTo(500,y);ctx.stroke();}
+    ctx.fillStyle='#aebbd0';ctx.font='14px sans-serif';ctx.fillText('アヒルの画面内の高さ（上ほど小さい）',42,24);
+    if(points.length){
+      ctx.strokeStyle='#66d9a5';ctx.lineWidth=3;ctx.beginPath();
+      points.forEach((p,i)=>{const x=42+p.t/duration*458,y=48+p.y*610;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});
+      ctx.stroke();
+      points.forEach(p=>{const x=42+p.t/duration*458,y=48+p.y*610;ctx.fillStyle='#ffd166';ctx.beginPath();ctx.arc(x,y,3,0,Math.PI*2);ctx.fill();});
+      ctx.fillStyle='#aebbd0';ctx.fillText('0秒',42,686);ctx.fillText(`${duration.toFixed(1)}秒`,450,686);
+      const avg=points.reduce((s,p)=>s+p.y,0)/points.length;
+      result.textContent=`アヒル候補を ${points.length} 回検出`;
+      detail.textContent=`平均高さ：画面上端から約${Math.round(avg*100)}% ／ 検出間隔：約${step.toFixed(2)}秒。線が上下する様子から、飛行の動きを確認できます。`;
+    }else{
+      result.textContent='アヒルを検出できませんでした';
+      detail.textContent='色や画面サイズが想定と異なる可能性があります。別の録画でも試してください。';
+    }
+    statusEl.textContent='分析完了';
+  }catch(e){statusEl.textContent='分析できませんでした。動画を選び直してください。';}
+  analyze.disabled=false;
+});
+</script></body></html>
